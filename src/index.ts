@@ -1,6 +1,7 @@
+import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { Server, StableBTreeMap, ic } from 'azle';
-import express from 'express';
+import bcrypt from 'bcrypt';
 
 // Define types for Trip, Hotel, Booking, and Payment
 interface Trip {
@@ -60,12 +61,20 @@ export default Server(() => {
     const checkUserRole = (role: UserRole) => {
         return (req: express.Request, res: express.Response, next: express.NextFunction) => {
             const userId = req.headers['user-id'] as string;
-            const user = usersStorage.get(userId).Some;
+            const user = usersStorage.get(userId)?.Some;
             if (!user || user.role !== role) {
                 return res.status(403).json({ error: "Access denied" });
             }
             next();
         };
+    };
+
+    // Middleware to hash passwords
+    const hashPassword = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        const { password } = req.body;
+        const hashedPassword = await bcrypt.hash(password, 10);
+        req.body.password = hashedPassword;
+        next();
     };
 
     // Endpoints for managing trips
@@ -81,7 +90,7 @@ export default Server(() => {
 
     app.get("/trips/:id", (req, res) => {
         const tripId = req.params.id;
-        const trip = tripsStorage.get(tripId).Some;
+        const trip = tripsStorage.get(tripId)?.Some;
         if (!trip) {
             return res.status(404).json({ error: `Trip with id ${tripId} not found` });
         }
@@ -101,7 +110,7 @@ export default Server(() => {
 
     app.get("/hotels/:id", (req, res) => {
         const hotelId = req.params.id;
-        const hotel = hotelsStorage.get(hotelId).Some;
+        const hotel = hotelsStorage.get(hotelId)?.Some;
         if (!hotel) {
             return res.status(404).json({ error: `Hotel with id ${hotelId} not found` });
         }
@@ -121,7 +130,7 @@ export default Server(() => {
 
     app.get("/bookings/:id", (req, res) => {
         const bookingId = req.params.id;
-        const booking = bookingsStorage.get(bookingId).Some;
+        const booking = bookingsStorage.get(bookingId)?.Some;
         if (!booking) {
             return res.status(404).json({ error: `Booking with id ${bookingId} not found` });
         }
@@ -130,9 +139,10 @@ export default Server(() => {
 
     app.put("/bookings/:id/cancel", (req, res) => {
         const bookingId = req.params.id;
-        const booking = bookingsStorage.get(bookingId).Some;
+        const booking = bookingsStorage.get(bookingId)?.Some;
         if (!booking) {
-            return res.status(404).json({ error: `Booking with id ${bookingId} not found` });
+            return
+ res.status(404).json({ error: `Booking with id ${bookingId} not found` });
         }
         // Update booking status to 'cancelled'
         booking.status = 'cancelled';
@@ -148,50 +158,63 @@ export default Server(() => {
         // Validate payment amount
         if (!amount || isNaN(amount) || amount <= 0) {
             return res.status(400).json({ error: "Invalid payment amount" });
-            }}
+        }
 
-        app.get("/payments", (req, res) => {
-            res.json(paymentsStorage.values());
-        });
-        
-        app.get("/payments/:id", (req, res) => {
-            const paymentId = req.params.id;
-            const payment = paymentsStorage.get(paymentId).Some;
-            if (!payment) {
-                return res.status(404).json({ error: `Payment with id ${paymentId} not found` });
-            }
-            res.json(payment);
-        });
-        
-        // Endpoints for managing users
-        app.post("/users", checkUserRole('admin'), (req, res) => {
-            const user: User = { id: uuidv4(), ...req.body };
-            usersStorage.insert(user.id, user);
-            res.json(user);
-        });
-        
-        app.get("/users", checkUserRole('admin'), (req, res) => {
-            res.json(usersStorage.values());
-        });
-        
-        app.get("/users/:id", checkUserRole('admin'), (req, res) => {
-            const userId = req.params.id;
-            const user = usersStorage.get(userId).Some;
-            if (!user) {
-                return res.status(404).json({ error: `User with id ${userId} not found` });
-            }
-            res.json(user);
-        });
-        
-        // Endpoint for user authentication
-        app.post("/login", (req, res) => {
-            const { username, password } = req.body;
-            const user = Object.values(usersStorage.values()).find(u => u.username === username && u.password === password);
-            if (!user) {
-                return res.status(401).json({ error: "Invalid username or password" });
-            }
-            res.json(user);
-        });
-        
-        return app.listen();
-        
+        // Process payment
+        const payment: Payment = { id: uuidv4(), amount, status: 'pending' };
+        paymentsStorage.insert(payment.id, payment);
+        res.json(payment);
+    });
+
+    app.get("/payments", (req, res) => {
+        res.json(paymentsStorage.values());
+    });
+
+    app.get("/payments/:id", (req, res) => {
+        const paymentId = req.params.id;
+        const payment = paymentsStorage.get(paymentId)?.Some;
+        if (!payment) {
+            return res.status(404).json({ error: `Payment with id ${paymentId} not found` });
+        }
+        res.json(payment);
+    });
+
+    // Endpoints for managing users
+    app.post("/users", checkUserRole('admin'), hashPassword, (req, res) => {
+        const user: User = { id: uuidv4(), ...req.body };
+        usersStorage.insert(user.id, user);
+        res.json(user);
+    });
+
+    app.get("/users", checkUserRole('admin'), (req, res) => {
+        res.json(usersStorage.values());
+    });
+
+    app.get("/users/:id", checkUserRole('admin'), (req, res) => {
+        const userId = req.params.id;
+        const user = usersStorage.get(userId)?.Some;
+        if (!user) {
+            return res.status(404).json({ error: `User with id ${userId} not found` });
+        }
+        res.json(user);
+    });
+
+    // Endpoint for user authentication
+    app.post("/login", async (req, res) => {
+        const { username, password } = req.body;
+        const user = Object.values(usersStorage.values()).find(u => u.username === username);
+        if (!user) {
+            return res.status(401).json({ error: "Invalid username or password" });
+        }
+
+        // Validate password
+        const validPassword = await bcrypt.compare(password, user.password);
+        if (!validPassword) {
+            return res.status(401).json({ error: "Invalid username or password" });
+        }
+
+        res.json(user);
+    });
+
+    return app.listen();
+});
